@@ -33,6 +33,12 @@ from utils.loss import compute_loss
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first
 
+
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+import ipdb
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,7 +90,8 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
         model = Model(opt.cfg, ch=3, nc=nc).to(device)  # create
-
+        #print(model)
+    
     # Freeze
     freeze = []  # parameter names to freeze (full or partial)
     for k, v in model.named_parameters():
@@ -92,7 +99,19 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         if any(x in k for x in freeze):
             print('freezing %s' % k)
             v.requires_grad = False
-
+    # log_file = "./log.txt"
+    # logging.basicConfig(level=logging.DEBUG,
+    #                     format="%(asctime)s - %(levelname)s - %(message)s",
+    #                     datefmt="%Y-%m-%d %H:%M:%S",
+    #                     filename=log_file,
+    #                     filemode='w')
+    # console = logging.StreamHandler()
+    # console.setLevel(logging.INFO)
+    # formatter = logging.Formatter('%(message)s')
+    # console.setFormatter(formatter)
+    # logging.getLogger('').addHandler(console)
+    # logging.info(model)
+   
     # Optimizer
     nbs = 64  # nominal batch size
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
@@ -164,6 +183,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
     # DP mode
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
+        print(222)
         model = torch.nn.DataParallel(model)
 
     # SyncBatchNorm
@@ -191,10 +211,13 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     if rank in [-1, 0]:
         ema.updates = start_epoch * nb // accumulate  # set EMA updates
         testloader = create_dataloader(test_path, imgsz_test, total_batch_size, gs, opt,  # testloader
-                                       hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
+                                       hyp=hyp, cache=opt.cache_images and not opt.notest,  rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
-                                       pad=0.5, prefix=colorstr('val: '))[0]
-
+                                       pad=0, prefix=colorstr('val: '))[0]
+        # testloader = create_dataloader(test_path, imgsz_test, total_batch_size, gs, opt,  # testloader
+        #                                hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
+        #                                world_size=opt.world_size, workers=opt.workers,
+        #                                pad=0.5, prefix=colorstr('val: '))[0] #transformer去掉rect，pad
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
             c = torch.tensor(labels[:, 0])  # classes
@@ -285,6 +308,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
             # Forward
             with amp.autocast(enabled=cuda):
+                #ipdb.set_trace()
                 pred = model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size
                 if rank != -1:
@@ -515,7 +539,7 @@ if __name__ == '__main__':
         if opt.global_rank in [-1, 0]:
             logger.info(f'Start Tensorboard with "tensorboard --logdir {opt.project}", view at http://localhost:6006/')
             tb_writer = SummaryWriter(opt.save_dir)  # Tensorboard
-        train(hyp, opt, device, tb_writer, wandb)
+        train(hyp, opt, device, tb_writer, None)
 
     # Evolve hyperparameters (optional)
     else:
@@ -589,7 +613,7 @@ if __name__ == '__main__':
                 hyp[k] = round(hyp[k], 5)  # significant digits
 
             # Train mutation
-            results = train(hyp.copy(), opt, device, wandb=wandb)
+            results = train(hyp.copy(), opt, device, wandb=None)
 
             # Write mutation results
             print_mutation(hyp.copy(), results, yaml_file, opt.bucket)

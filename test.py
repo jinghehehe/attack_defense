@@ -3,21 +3,26 @@ import json
 import os
 from pathlib import Path
 from threading import Thread
-
+import time
 import numpy as np
 import torch
 import yaml
 from tqdm import tqdm
-
+from defense.unet import UNet
+#from defense.train2 import init_model
 from models.experimental import attempt_load
 from utils.datasets import create_dataloader
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
     box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
-from utils.loss import compute_loss
+from utils.loss import compute_loss,compute_loss2
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized
-
+### 引入攻击部分
+import sys
+sys.path.append('../')
+from attack.tog.attacks import TOG
+from PIL import Image
 
 def test(data,
          weights=None,
@@ -46,15 +51,18 @@ def test(data,
     else:  # called directly
         set_logging()
         device = select_device(opt.device, batch_size=batch_size)
-
+        
         # Directories
         save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
         (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
         # Load model
         model = attempt_load(weights, map_location=device)  # load FP32 model
+        print(1111)
+        print(model.stride.max())
         imgsz = check_img_size(imgsz, s=model.stride.max())  # check img_size
-
+        print(imgsz)
+        print(1111)
         # Multi-GPU disabled, incompatible with .half() https://github.com/ultralytics/yolov5/issues/99
         # if device.type != 'cpu' and torch.cuda.device_count() > 1:
         #     model = nn.DataParallel(model)
@@ -86,9 +94,11 @@ def test(data,
         img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
         _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
         path = data['test'] if opt.task == 'test' else data['val']  # path to val/test images
-        dataloader = create_dataloader(path, imgsz, batch_size, model.stride.max(), opt, pad=0.5, rect=True,
+        dataloader = create_dataloader(path, imgsz, batch_size, model.stride.max(), opt,  pad=0.5,  
                                        prefix=colorstr('test: ' if opt.task == 'test' else 'val: '))[0]
-
+# dataloader = create_dataloader(path, imgsz, batch_size, model.stride.max(), opt, pad=0.5, rect=True,
+#                                        prefix=colorstr('test: ' if opt.task == 'test' else 'val: '))[0]
+#                                rect = True改
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
@@ -98,9 +108,40 @@ def test(data,
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+        np.set_printoptions(threshold=np.inf)
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        #print(img.shape)
+        #print(targets)
+        #引入攻击部分
+        attack_model = TOG(model)
+        #targets2 = targets.clone()
+
+        targets2 = torch.empty(0,6)
+        # print(111)
+        # print(targets2)
+        # print(111)
+        img = attack_model.tog_vanishing(img, targets2, compute_loss2)
+        img = img.to(device, non_blocking=True)
+        img = img.half() if half else img.float()  # uint8 to fp16/32
+
+        ## 引入攻击部分
+        #print(targets)
+        ## 引入防御部分
+        #2021-06-22_23-37-34 旧， 2021-06-26_22-00-07 新一个 2021-06-26_23-10-17新三个 2021-06-28_22-37-51resJIU 2021-06-29_10-29-22 DENSE resnet 2021-06-29_10-44-33
+        d_block = UNet(bn='bn')
+        d_block.load_state_dict(torch.load('/data/private_data/jf_private/CCPD2020/CCPD2019/defense/results/2021-06-29_10-44-33/1_net.pth', map_location='cpu')['model'])
+        d_block.cuda().eval()
+        d_block.half()
+        t0 = time.time()
+        img = d_block(img)
+        t1 = time.time()
+        print(str(t1-t0)+'s')
+        img = img.detach()
+
+
+        # ## 引入防御部分
         targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
 

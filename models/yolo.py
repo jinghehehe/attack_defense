@@ -19,6 +19,8 @@ try:
 except ImportError:
     thop = None
 
+import ipdb
+
 
 class Detect(nn.Module):
     stride = None  # strides computed during build
@@ -65,9 +67,12 @@ class Detect(nn.Module):
 class Model(nn.Module):
     def __init__(self, cfg='yolov3.yaml', ch=3, nc=None):  # model, input channels, number of classes
         super(Model, self).__init__()
+        print(111)
         if isinstance(cfg, dict):
             self.yaml = cfg  # model dict
+            print(self.yaml)
         else:  # is *.yaml
+            print(222)
             import yaml  # for torch hub
             self.yaml_file = Path(cfg).name
             with open(cfg) as f:
@@ -79,14 +84,20 @@ class Model(nn.Module):
             logger.info('Overriding model.yaml nc=%g with nc=%g' % (self.yaml['nc'], nc))
             self.yaml['nc'] = nc  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
+        # if True:
+        #     self.model = self.model[:10]
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
 
         # Build strides, anchors
         m = self.model[-1]  # Detect()
-        if isinstance(m, Detect):
-            s = 256  # 2x min stride
+        if isinstance(m, Detect): #试跑
+            s = 640  # 2x min stride
+            print(2233)
+            #print(self.forward(torch.zeros(1, ch, s, s)))
+            #print(self.forward(torch.zeros(1, ch, s, s)).shape)
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            print(m.stride)
             m.anchors /= m.stride.view(-1, 1, 1)
             check_anchor_order(m)
             self.stride = m.stride
@@ -94,8 +105,9 @@ class Model(nn.Module):
             # print('Strides: %s' % m.stride.tolist())
 
         # Init weights, biases
+        #print(3344)
         initialize_weights(self)
-        self.info()
+        #self.info()
         logger.info('')
 
     def forward(self, x, augment=False, profile=False):
@@ -104,6 +116,7 @@ class Model(nn.Module):
             s = [1, 0.83, 0.67]  # scales
             f = [None, 3, None]  # flips (2-ud, 3-lr)
             y = []  # outputs
+            
             for si, fi in zip(s, f):
                 xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
                 yi = self.forward_once(xi)[0]  # forward
@@ -120,6 +133,7 @@ class Model(nn.Module):
 
     def forward_once(self, x, profile=False):
         y, dt = [], []  # outputs
+        #print(4455)
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
@@ -131,7 +145,8 @@ class Model(nn.Module):
                     _ = m(x)
                 dt.append((time_synchronized() - t) * 100)
                 print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
-
+            # print(m)
+            # print()
             x = m(x)  # run
             y.append(x if m.i in self.save else None)  # save output
 
@@ -208,9 +223,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
             except:
                 pass
-
+        resnet_n=n
+        transformer_n = n
         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        if m in [Conv, Bottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP, C3]:
+        if m in [Conv, Bottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP, BottleneckCSP2, SPPCSP, C3,MobileNetConv]:
             c1, c2 = ch[f], args[0]
 
             # Normal
@@ -243,14 +259,42 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             args.append([ch[x + 1] for x in f])
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
+                
         elif m is Contract:
             c2 = ch[f if f < 0 else f + 1] * args[0] ** 2
         elif m is Expand:
             c2 = ch[f if f < 0 else f + 1] // args[0] ** 2
+        elif m is resLayer:
+            c1=ch[f if f<0 else f+1]
+            c2=args[0]
+            args=[c1,c2,resnet_n,*args[1:]]
+        elif m is transformerLayer:
+            c1=ch[f if f<0 else f+1]
+            c2=args[0]
+            #print(transformer_n)
+            args=[c1,c2,transformer_n,*args[1:]] 
+        elif m is Maxpool:
+            kernel_size, strides = args[0], args[1]
+            args = [kernel_size, strides]
+        elif m in [nn.Conv2d]:
+            c1 = ch[f if f<0 else f+1]
+            c2 = args[0]
+            args = [c1, c2, *args[1:], 1, 1, False]
+        elif m in [denseLayer]:
+            c1 = ch[f if f<0 else f+1]
+            c2 = args[0]
+            args = [c1, c2, *args[1:]]
+        elif m in [transition]:
+            c1 = args[0]
+            c2 = args[1]
         else:
             c2 = ch[f if f < 0 else f + 1]
 
-        m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+        if m in [resLayer, transformerLayer]:
+            m_=m(*args)
+            c2*=4 #blocks.expansion
+        else:
+            m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace('__main__.', '')  # module type
         np = sum([x.numel() for x in m_.parameters()])  # number params
         m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
@@ -258,6 +302,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
         layers.append(m_)
         ch.append(c2)
+    #print(layers)
     return nn.Sequential(*layers), sorted(save)
 
 

@@ -1,0 +1,2 @@
+dataset_pru & test & model  -- test acc after attack/ after defense
+train.sh & main & denoiser & dataset_pru_cw & unet  & utils -- train defense block

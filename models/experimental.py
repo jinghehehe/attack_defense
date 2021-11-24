@@ -114,11 +114,17 @@ def attempt_load(weights, map_location=None):
     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a
     model = Ensemble()
     for w in weights if isinstance(weights, list) else [weights]:
+        # if w in weights[-1]:
+        #print(w)
+        #print()
+        # else:
         attempt_download(w)
         model.append(torch.load(w, map_location=map_location)['model'].float().fuse().eval())  # load FP32 model
 
     # Compatibility updates
     for m in model.modules():
+        #print(m)
+        #print()
         if type(m) in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6]:
             m.inplace = True  # pytorch 1.7.0 compatibility
         elif type(m) is Conv:
